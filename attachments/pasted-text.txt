@@ -1,0 +1,338 @@
+Integrating the three modalities works best at the decision level: each sensor produces an independent confidence score, and a fusion engine combines them so that no single modality can trigger a false alert alone. The thermal array is the load-bearing modality for posture—research shows it is what separates a fall from sitting on a bed or lying in a chair, while radar alone collapses those stationary states into one cluster. Audio provides the impact/verification cue, and door/motion sensors provide the room-level context and occupancy clock. The optional wearable plugs in as an enrichment signal, never as a dependency.
+
+🧠 Integration Logic: Three Tiers of Evidence
+
+Tier 1: Context (Door/Motion Sensors). A bathroom door opening at 3 AM is not an alert—it is a trigger that wakes up the higher-resolution modalities for a short window. This is the "wake-on-context" pattern that keeps power and compute low.
+
+Tier 2: Impact and Verification (Audio + Thermal). Once context fires, the audio stream checks for an impact signature (short, sharp energy burst under ~500 ms). The thermal array simultaneously checks whether a human heat blob is present and whether its geometric centroid has dropped to floor level and remained stationary. The geophone–thermal fall detection literature explicitly uses this primary/secondary architecture: impact sensor as the trigger, thermal as the confirmer.
+
+Tier 3: Enrichment (Optional Wearable). A BLE wearable reporting heart rate via the standard Heart Rate GATT Service (UUID 0x180D) can add physiological context—e.g., a sudden heart-rate spike coincident with a thermal stillness event raises the fused confidence. But the system must function identically when the wearable is absent.
+
+💻 Ready-to-Use Python Fusion Engine
+
+The code below implements weighted Bayesian-style decision fusion with missing-modality handling. If the wearable is not paired, its weight is redistributed to the ambient modalities rather than penalizing the score. The weights are prior probabilities—set them based on your pilot data; the defaults here reflect the literature's emphasis on thermal for posture and audio for impact.
+
+```python
+"""
+Multimodal elder-care fusion engine.
+Modalities: door/motion (context), audio (impact), thermal (posture/stillness), optional BLE wearable.
+Fusion: weighted log-odds (Bayesian-inspired) with missing-modality renormalization.
+"""
+
+import time
+import numpy as np
+from dataclasses import dataclass, field
+from typing import Optional, Dict
+from collections import deque
+
+# ------------------------------------------------------------------
+# 1. Data contracts
+# ------------------------------------------------------------------
+
+@dataclass
+class SensorEvent:
+    modality: str          # "door", "audio", "thermal", "wearable"
+    timestamp: float
+    confidence: float       # 0.0–1.0: probability of a "fall/abnormal event"
+    payload: dict = field(default_factory=dict)  # raw context for audit
+
+
+# ------------------------------------------------------------------
+# 2. Modality processors (stubs — plug your drivers here)
+# ------------------------------------------------------------------
+
+class DoorSensor:
+    """
+    Context trigger only. Does not produce fall confidence.
+    Emits a 'context_active' flag when a monitored door (bathroom/bedroom) opens/closes.
+    """
+    def __init__(self, monitored_zones=("bathroom", "bedroom")):
+        self.zones = set(monitored_zones)
+        self.last_event_time = 0.0
+        self.context_window_sec = 120.0  # keep modalities awake for 2 min
+
+    def process(self, zone: str, state: str, ts: float) -> Optional[SensorEvent]:
+        if zone not in self.zones:
+            return None
+        self.last_event_time = ts
+        # Door is context, not evidence of fall. confidence stays 0.
+        return SensorEvent("door", ts, 0.0, {"zone": zone, "state": state})
+
+    def context_is_active(self, now: float) -> bool:
+        return (now - self.last_event_time) <= self.context_window_sec
+
+
+class AudioSensor:
+    """
+    Extracts impact likelihood from a short audio buffer.
+    Production: replace the stub with MFCC + SVM/CNN inference.
+    Features commonly used: MFCC (13 coeffs), RMS, ZCR, spectral centroid, spectral bandwidth.
+    """
+    def __init__(self, impact_threshold: float = 0.6):
+        self.threshold = impact_threshold
+
+    def process(self, audio_buffer: np.ndarray, sr: int, ts: float) -> SensorEvent:
+        # --- STUB: replace with real feature extraction + classifier ---
+        # Real pipeline: librosa.feature.mfcc(y=buffer, sr=sr, n_mfcc=13)
+        # then SVM/CNN -> probability. Below is a placeholder energy heuristic.
+        rms = float(np.sqrt(np.mean(audio_buffer ** 2)))
+        # Normalize to a 0–1 confidence via a sigmoid-like transform.
+        # Calibrate this against your own impact recordings.
+        confidence = 1.0 / (1.0 + np.exp(-(rms - 0.15) * 20))
+        confidence = float(np.clip(confidence, 0.0, 1.0))
+        return SensorEvent(
+            "audio", ts, confidence,
+            {"rms": rms, "threshold": self.threshold}
+        )
+
+
+class ThermalSensor:
+    """
+    MLX90640 32x24 thermal array.
+    Detects: human heat blob presence, centroid height (floor vs standing),
+    and stillness (low variance of centroid across frames).
+    """
+    def __init__(self, human_temp_min_c: float = 28.0, human_temp_max_c: float = 38.0,
+                 floor_centroid_threshold: float = 0.35,
+                 stillness_frames: int = 5):
+        self.tmin = human_temp_min_c
+        self.tmax = human_temp_max_c
+        self.floor_y_thresh = floor_centroid_threshold  # normalized 0 (top) – 1 (bottom)
+        self.stillness_frames = stillness_frames
+        self._centroid_history = deque(maxlen=stillness_frames)
+
+    def process(self, frame: np.ndarray, ts: float) -> SensorEvent:
+        """
+        frame: 24x32 numpy array of temperatures (°C).
+        Returns confidence that the posture is 'fallen + still'.
+        """
+        # 1. Isolate human heat pixels.
+        mask = (frame >= self.tmin) & (frame <= self.tmax)
+        pixel_count = int(mask.sum())
+        if pixel_count < 6:
+            self._centroid_history.clear()
+            return SensorEvent("thermal", ts, 0.0, {"reason": "no_human_blob"})
+
+        # 2. Compute centroid (normalized coords).
+        ys, xs = np.nonzero(mask)
+        cy = float(ys.mean()) / frame.shape[0]   # 0=top, 1=bottom
+        cx = float(xs.mean()) / frame.shape[1]
+        self._centroid_history.append(cy)
+
+        # 3. Floor-level and stillness checks.
+        floor_level = cy >= self.floor_y_thresh
+        stillness = False
+        if len(self._centroid_history) == self.stillness_frames:
+            spread = max(self._centroid_history) - min(self._centroid_history)
+            stillness = spread < 0.08  # normalized vertical drift < 8%
+
+        # 4. Confidence: high only when floor-level AND still.
+        if floor_level and stillness:
+            confidence = 0.9
+        elif floor_level:
+            confidence = 0.5
+        elif stillness and pixel_count > 20:
+            confidence = 0.2  # still but not floor-level (e.g., sitting)
+        else:
+            confidence = 0.05
+
+        return SensorEvent(
+            "thermal", ts, float(confidence),
+            {"centroid_y": cy, "centroid_x": cx,
+             "pixels": pixel_count, "floor_level": floor_level,
+             "still": stillness}
+        )
+
+
+class WearableBLE:
+    """
+    Optional BLE wearable via Heart Rate GATT Service (0x180D).
+    Uses the 'bleak' library. Non-blocking: run in an asyncio task.
+    If absent, the fusion engine simply renormalizes weights.
+    """
+    HR_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
+    HR_MEASUREMENT_CHAR = "00002a37-0000-1000-8000-00805f9b34fb"
+
+    def __init__(self, device_address: Optional[str] = None):
+        self.address = device_address
+        self.last_hr = None
+        self.baseline_hr = None
+        self.connected = False
+
+    async def connect_and_subscribe(self):
+        # Production: import asyncio, bleak
+        # from bleak import BleakClient
+        # self.client = BleakClient(self.address)
+        # await self.client.connect()
+        # await self.client.start_notify(HR_MEASUREMENT_CHAR, self._on_hr)
+        self.connected = True
+
+    def _on_hr(self, sender, data: bytearray):
+        # Heart Rate Measurement: flags byte then uint8 or uint16 HR.
+        flags = data[0]
+        if flags & 0x01:  # uint16
+            hr = int.from_bytes(data[1:3], "little")
+        else:
+            hr = data[1]
+        self.last_hr = hr
+
+    def process(self, ts: float) -> Optional[SensorEvent]:
+        if not self.connected or self.last_hr is None:
+            return None
+        if self.baseline_hr is None:
+            self.baseline_hr = self.last_hr
+        delta = self.last_hr - self.baseline_hr
+        # Sudden spike = weak positive evidence, but NOT a fall verdict.
+        confidence = float(np.clip(max(0.0, delta / 40.0), 0.0, 0.4))
+        return SensorEvent("wearable", ts, confidence, {"hr": self.last_hr, "delta": delta})
+
+
+# ------------------------------------------------------------------
+# 3. Fusion engine
+# ------------------------------------------------------------------
+
+class FusionEngine:
+    """
+    Weighted log-odds fusion with missing-modality renormalization.
+    Each modality contributes a prior weight * logit(confidence).
+    A minimum number of active modalities is required for escalation.
+    """
+    def __init__(self,
+                 weights: Dict[str, float] = None,
+                 alert_threshold: float = 0.85,
+                 confirm_threshold: float = 0.60,
+                 min_active_modalities: int = 2):
+        # Default priors: thermal is posture-critical; audio is impact-critical.
+        self.weights = weights or {
+            "door": 0.0,      # context only, never contributes evidence
+            "audio": 0.35,
+            "thermal": 0.45,
+            "wearable": 0.20,
+        }
+        self.alert_threshold = alert_threshold
+        self.confirm_threshold = confirm_threshold
+        self.min_active = min_active_modalities
+        self.history = deque(maxlen=200)
+
+    @staticmethod
+    def _logit(p: float, eps: float = 1e-6) -> float:
+        p = float(np.clip(p, eps, 1.0 - eps))
+        return np.log(p / (1.0 - p))
+
+    @staticmethod
+    def _sigmoid(x: float) -> float:
+        return 1.0 / (1.0 + np.exp(-x))
+
+    def fuse(self, events: list[SensorEvent], ts: float) -> dict:
+        # 1. Collapse to latest event per modality.
+        latest = {}
+        for e in events:
+            if e.modality not in latest or e.timestamp > latest[e.modality].timestamp:
+                latest[e.modality] = e
+
+        # 2. Identify active evidence modalities (door excluded).
+        evidence_mods = [m for m in latest if m in self.weights and self.weights[m] > 0]
+        if len(evidence_mods) < self.min_active:
+            return {
+                "verdict": "insufficient_evidence",
+                "fused_probability": None,
+                "active_modalities": evidence_mods,
+                "timestamp": ts,
+            }
+
+        # 3. Renormalize weights over active modalities.
+        total_w = sum(self.weights[m] for m in evidence_mods)
+        weighted_logodds = 0.0
+        contributions = {}
+        for m in evidence_mods:
+            w = self.weights[m] / total_w
+            lo = self._logit(latest[m].confidence)
+            weighted_logodds += w * lo
+            contributions[m] = {"weight": round(w, 3),
+                                "confidence": round(latest[m].confidence, 3),
+                                "logodds": round(lo, 3)}
+
+        fused_prob = self._sigmoid(weighted_logodds)
+
+        # 4. Verdict.
+        if fused_prob >= self.alert_threshold:
+            verdict = "ALERT_FALL"
+        elif fused_prob >= self.confirm_threshold:
+            verdict = "CONFIRM_PENDING"  # e.g., request audio/thermal re-check
+        else:
+            verdict = "NO_ALERT"
+
+        result = {
+            "verdict": verdict,
+            "fused_probability": round(float(fused_prob), 3),
+            "active_modalities": evidence_mods,
+            "contributions": contributions,
+            "timestamp": ts,
+        }
+        self.history.append(result)
+        return result
+
+
+# ------------------------------------------------------------------
+# 4. Demo: simulate a bathroom fall at 3 AM
+# ------------------------------------------------------------------
+
+def run_demo():
+    door = DoorSensor()
+    audio = AudioSensor()
+    thermal = ThermalSensor()
+    wearable = WearableBLE(device_address=None)  # optional; not connected in demo
+    fusion = FusionEngine()
+
+    now = time.time()
+
+    # (a) Door opens — context trigger, no fall evidence.
+    e_door = door.process("bathroom", "open", now)
+
+    # (b) Audio buffer: sharp impact (simulated high-energy transient).
+    sr = 16000
+    t = np.linspace(0, 0.3, int(sr * 0.3), endpoint=False)
+    impact = 0.8 * np.sin(2 * np.pi * 180 * t) * np.exp(-40 * t)  # decaying thud
+    e_audio = audio.process(impact, sr, now + 0.2)
+
+    # (c) Thermal frame: human blob at floor level, still across frames.
+    frame = np.full((24, 32), 22.0)  # ambient ~22°C
+    # Simulate a fallen body: warm blob in bottom third of the frame.
+    frame[18:22, 8:24] = 33.0
+    e_thermal = thermal.process(frame, now + 0.4)
+    # Feed additional identical frames to satisfy stillness.
+    for _ in range(thermal.stillness_frames - 1):
+        e_thermal = thermal.process(frame, now + 0.5)
+
+    # (d) Wearable absent — fusion renormalizes.
+    events = [e_door, e_audio, e_thermal]
+    result = fusion.fuse(events, now + 1.0)
+
+    print("=== Fusion Result ===")
+    for k, v in result.items():
+        print(f"{k}: {v}")
+
+    # Expected: fused_probability high (>0.85) because thermal (floor+still)
+    # and audio (impact) agree. Door contributes zero evidence.
+
+if __name__ == "__main__":
+    run_demo()
+```
+
+📝 How to Wire the Stubs to Real Hardware
+
+The demo above uses stubs for audio and thermal. For production:
+
+· Audio: Replace the RMS heuristic with librosa.feature.mfcc(y=buffer, sr=sr, n_mfcc=13) plus RMS/ZCR/spectral features, then a pre-trained SVM or small CNN. This is the standard MFCC + SVM pipeline used in the fall-detection literature and open-source implementations.
+· Thermal: The MLX90640 driver returns a 32×24 temperature frame. The blob-detection logic above is intentionally simple; for posture discrimination (lying vs sitting vs standing), the literature shows engineered thermal summaries (centroid, area, aspect ratio) fed to a random forest remain competitive with deep learning at this resolution, and thermal specifically wins on the quasi-static classes that radar collapses. You can also use the mlx9064x-blob-detection OpenCV-based package as a starting point.
+· Wearable: The WearableBLE class uses the standard Heart Rate Measurement characteristic (0x2A37) under the Heart Rate Service (0x180D). The bleak library is the standard Python BLE client; connect asynchronously and subscribe to notifications. In the fusion engine, a missing wearable simply drops out of evidence_mods and the weights renormalize—no code change required.
+
+⚙️ Calibration Levers You Must Tune in the Field
+
+The fusion weights and thresholds are priors, not constants. In your pilot:
+
+1. Measure the thermal stillness spread threshold (0.08 in the demo). If your mounting height or field of view differs from the literature's 1 m height / 1.5 m distance setup, this number will shift.
+2. Calibrate audio impact confidence against recordings from the actual rooms—bathroom acoustics (tile reflections, running water) will change the RMS/sigmoid mapping dramatically.
+3. Set the alert threshold based on the caregiver's tolerance for false alarms. A fused probability of 0.85 with audio + thermal agreement is a defensible starting point; if you add the wearable, the same threshold becomes easier to reach, but the system must never require the wearable to alert.
+
+The key architectural win is that door sensors never vote on whether a fall happened—they only decide when to listen and look. That single design choice is what keeps the false-alarm rate low enough for an agency to trust the alerts.

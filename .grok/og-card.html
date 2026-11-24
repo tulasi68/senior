@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face {
+    font-family: "Plex Sans";
+    src: url("fonts/IBMPlexSans-Medium.ttf") format("truetype");
+    font-weight: 500;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: "Plex Mono";
+    src: url("fonts/IBMPlexMono-Medium.ttf") format("truetype");
+    font-weight: 500;
+    font-style: normal;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1200px;
+    height: 630px;
+    overflow: hidden;
+    background: #121416;
+    color: #eceae6;
+  }
+  body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .tick {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    color: #9a9d99;
+  }
+  .tick::before, .tick::after {
+    content: "";
+    position: absolute;
+    background: #9a9d99;
+  }
+  .tick::before { width: 16px; height: 1px; }
+  .tick::after { width: 1px; height: 16px; }
+  .tick.tl { top: 28px; left: 28px; }
+  .tick.tr { top: 28px; right: 28px; }
+  .tick.bl { bottom: 28px; left: 28px; }
+  .tick.br { bottom: 28px; right: 28px; }
+  .tick.tr::before, .tick.br::before { right: 0; }
+  .tick.bl::after, .tick.br::after { bottom: 0; }
+  .tick.tr::after { right: 0; }
+  .tick.br::before { bottom: 0; }
+  .tick.br::after { right: 0; }
+  h1 {
+    font-family: "Plex Sans", sans-serif;
+    font-weight: 500;
+    font-size: 92px;
+    line-height: 1;
+    letter-spacing: 0.18em;
+    padding-left: 0.18em;
+    color: #eceae6;
+  }
+  .rule {
+    width: 360px;
+    height: 2px;
+    background: #d9d6cf;
+    margin: 26px 0 16px;
+  }
+  .tag {
+    font-family: "Plex Mono", monospace;
+    font-weight: 500;
+    font-size: 15px;
+    letter-spacing: 0.46em;
+    padding-left: 0.46em;
+    color: #9a9d99;
+    line-height: 1;
+  }
+  .plan {
+    margin-top: 42px;
+    width: 620px;
+    height: 214px;
+    background: #1c1e20;
+    display: block;
+  }
+</style>
+</head>
+<body>
+  <span class="tick tl"></span>
+  <span class="tick tr"></span>
+  <span class="tick bl"></span>
+  <span class="tick br"></span>
+  <h1>FLOORLINE</h1>
+  <div class="rule"></div>
+  <p class="tag">FALL FUSION</p>
+  <svg class="plan" viewBox="0 0 620 214" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <g fill="none" stroke="#d9d6cf" stroke-width="2.5" stroke-linecap="square">
+      <!-- outer shell, broken only at the entry -->
+      <path d="M48 36 H572 V178 H48 V36" />
+      <!-- cross walls -->
+      <path d="M48 112 H248" />
+      <path d="M292 112 H390" />
+      <path d="M220 112 V178" />
+      <path d="M390 36 V96" />
+      <path d="M390 132 V178" />
+    </g>
+    <!-- threshold mark: one clay-red status square, not a wash -->
+    <rect x="385" y="107" width="10" height="10" fill="#c45c52" />
+  </svg>
+</body>
+</html>

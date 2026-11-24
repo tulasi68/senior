@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Floorline",
+      "hasCanvas": false,
+      "bodyTextLen": 2078,
+      "bodyTextHash": "27582fe8369a8e7038d47ffbbc729f14bea8ca9f29c88d43e88122df51ae8683",
+      "bodyTextPrefix": "Pilot home 4B Floorline 03:14:10 Night watch Bathroom, 03:14 Sat",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Floorline",
+      "hasCanvas": false,
+      "bodyTextLen": 2078,
+      "bodyTextHash": "27582fe8369a8e7038d47ffbbc729f14bea8ca9f29c88d43e88122df51ae8683",
+      "bodyTextPrefix": "Pilot home 4B Floorline 03:14:10 Night watch Bathroom, 03:14 Sat",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
